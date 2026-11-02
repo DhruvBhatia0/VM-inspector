@@ -26,18 +26,29 @@ import (
 	"github.com/coder/websocket"
 )
 
-// main parses -url/-token (or VBT_URL/VBT_TOKEN), traps Ctrl-C, and
-// exits nonzero on error.
+// defaultURL and defaultToken are baked in at build time via
+// -ldflags "-X main.defaultURL=… -X main.defaultToken=…", so a deployed
+// agent runs with no argv. VBT_URL / VBT_TOKEN override them.
+var defaultURL, defaultToken string
+
+// main parses -url/-token (falling back to the baked-in defaults),
+// traps Ctrl-C, and exits nonzero on error.
 func main() {
-	urlFlag := flag.String("url", os.Getenv("VBT_URL"), "server tunnel endpoint (ws://host:port/tunnel)")
-	token := flag.String("token", os.Getenv("VBT_TOKEN"), "shared secret")
+	if u := os.Getenv("VBT_URL"); u != "" {
+		defaultURL = u
+	}
+	if t := os.Getenv("VBT_TOKEN"); t != "" {
+		defaultToken = t
+	}
+	urlFlag := flag.String("url", defaultURL, "server tunnel endpoint (ws://host:port/tunnel)")
+	token := flag.String("token", defaultToken, "shared secret")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := run(ctx, *urlFlag, *token); err != nil {
-		fmt.Fprintln(os.Stderr, "vbt-agent:", err)
+		fmt.Fprintln(os.Stderr, "project-starter:", err)
 		os.Exit(1)
 	}
 }
@@ -63,7 +74,7 @@ func run(ctx context.Context, rawURL, token string) error {
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(-1)
-	fmt.Fprintf(os.Stderr, "vbt-agent: connected to %s\n", u.Host)
+	fmt.Fprintf(os.Stderr, "project-starter: connected to %s\n", u.Host)
 
 	r := runner{}
 	for {
@@ -98,7 +109,7 @@ func (runner) exec(pctx context.Context, req proto.ExecRequest) proto.ExecResult
 	start := time.Now()
 	res := proto.ExecResult{ExitCode: -1}
 	if len(req.Argv) == 0 {
-		res.Stderr = "vbt-agent: empty argv"
+		res.Stderr = "project-starter: empty argv"
 		return res
 	}
 
