@@ -10,16 +10,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/DhruvBhatia0/VM-inspector/internal/proto"
 )
 
 const defaultSocket = "/tmp/vbt.sock"
 
+// main dispatches the serve/exec subcommands and maps errors to exit
+// codes (an exitError exits with the VM command's own status).
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -38,11 +46,16 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
+		var ec exitError
+		if errors.As(err, &ec) {
+			os.Exit(ec.code)
+		}
 		fmt.Fprintln(os.Stderr, "vbt-server:", err)
 		os.Exit(1)
 	}
 }
 
+// usage prints the CLI summary to stderr.
 func usage() {
 	fmt.Fprint(os.Stderr, strings.TrimSpace(`
 usage:
@@ -51,6 +64,7 @@ usage:
 `)+"\n")
 }
 
+// cmdServe parses serve flags and runs the daemon until interrupted.
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:8765", "tunnel listen address")
@@ -59,13 +73,24 @@ func cmdServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	return newHub(config{
 		listenAddr: *addr,
 		token:      *token,
 		socketPath: *socket,
-	}).serve(context.Background())
+	}).serve(ctx)
 }
 
+// exitError propagates the VM-side exit code to the human caller's $?.
+type exitError struct{ code int }
+
+// Error implements error.
+func (e exitError) Error() string { return "exit status " + strconv.Itoa(e.code) }
+
+// cmdExec parses exec flags, sends the command through the daemon,
+// then prints the result as JSON (--json) or raw with the command's
+// exit code propagated to $?.
 func cmdExec(args []string) error {
 	fs := flag.NewFlagSet("exec", flag.ExitOnError)
 	socket := fs.String("socket", defaultSocket, "unix socket path of the daemon")
@@ -79,11 +104,34 @@ func cmdExec(args []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("no command given (use: vbt-server exec -- cmd args...)")
 	}
-	_ = jsonOut // output formatting lands with the CLI phase
-	_, err := newClient(*socket).exec(context.Background(), proto.ExecRequest{
+
+	// client waits a little longer than the VM-side kill so a timeout
+	// surfaces as timed_out, not as a lost reply
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration((*timeout+10)*float64(time.Second)))
+	defer cancel()
+
+	res, err := newClient(*socket).exec(ctx, proto.ExecRequest{
 		Argv:        argv,
 		Cwd:         *cwd,
 		TimeoutSecs: *timeout,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return json.NewEncoder(os.Stdout).Encode(res)
+	}
+	os.Stdout.WriteString(res.Stdout)
+	os.Stderr.WriteString(res.Stderr)
+	if res.TimedOut {
+		return errors.New("command timed out")
+	}
+	if res.ExitCode < 0 {
+		return errors.New("command did not run")
+	}
+	if res.ExitCode > 0 {
+		return exitError{res.ExitCode}
+	}
+	return nil
 }
