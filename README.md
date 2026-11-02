@@ -9,9 +9,9 @@ codes — structured, so LLMs can explore the box without a terminal.
 
 | | runs where | role |
 |---|---|---|
-| `vbt-agent` | inside the VM | dials out, executes commands |
 | `vbt-server serve` | your machine | daemon: accepts the tunnel + a local unix socket |
 | `vbt-server exec` | your machine | client: one command, result to stdout |
+| the ledger | your machine | append-only JSONL log of every command/response |
 
 ## Build
 
@@ -57,5 +57,17 @@ codes — structured, so LLMs can explore the box without a terminal.
 
 Builds both binaries, runs `vbt-agent` inside the Lima VM via an ssh -R
 reverse forward (the stand-in for the production ngrok path), and runs
-six checks: ls roundtrip, grep sequencing + cwd, exit-code propagation,
-stderr separation, timeout kill, bad-token rejection. ~15s.
+seven checks: ls roundtrip, grep sequencing + cwd, exit-code propagation,
+stderr separation, timeout kill, bad-token rejection, ledger recording. ~15s.
+
+## Ledger
+
+The daemon maintains a ledger on its own: every exec roundtrip is appended
+as one JSON line — argv, cwd, timeout, exit code, timed_out, duration, and
+captured stdout/stderr (capped at 64 KiB per stream, truncation flagged).
+Transport failures are recorded too (exit_code −1, the error in stderr).
+A `session_start` line marks each daemon run; the file persists across
+sessions.
+
+    vbt-server serve -ledger /tmp/vbt.ledger.jsonl   # default path
+    jq -c '{ts, argv, exit_code}' /tmp/vbt.ledger.jsonl   # read it back

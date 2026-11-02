@@ -25,6 +25,7 @@ import (
 )
 
 const defaultSocket = "/tmp/vbt.sock"
+const defaultLedger = "/tmp/vbt.ledger.jsonl"
 
 // main dispatches the serve/exec subcommands and maps errors to exit
 // codes (an exitError exits with the VM command's own status).
@@ -55,11 +56,10 @@ func main() {
 	}
 }
 
-// usage prints the CLI summary to stderr.
 func usage() {
 	fmt.Fprint(os.Stderr, strings.TrimSpace(`
 usage:
-  vbt-server serve [-addr 127.0.0.1:8765] [-socket path] -token T
+  vbt-server serve [-addr 127.0.0.1:8765] [-socket path] [-ledger path] -token T
   vbt-server exec [-socket path] [-json] [-timeout 30] [-cwd dir] -- cmd args...
 `)+"\n")
 }
@@ -69,6 +69,7 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:8765", "tunnel listen address")
 	socket := fs.String("socket", defaultSocket, "unix socket path for local clients")
+	ledgerPath := fs.String("ledger", defaultLedger, "append-only JSONL log of every command/response")
 	token := fs.String("token", os.Getenv("VBT_TOKEN"), "shared secret required of the agent")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -79,6 +80,7 @@ func cmdServe(args []string) error {
 		listenAddr: *addr,
 		token:      *token,
 		socketPath: *socket,
+		ledgerPath: *ledgerPath,
 	}).serve(ctx)
 }
 

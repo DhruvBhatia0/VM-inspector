@@ -26,6 +26,7 @@ type config struct {
 	listenAddr string // tunnel listen address, e.g. "127.0.0.1:8765"
 	token      string // shared secret required of the agent
 	socketPath string // unix socket path for local clients
+	ledgerPath string // append-only JSONL log of every command/response
 }
 
 type hub struct {
@@ -36,6 +37,7 @@ type hub struct {
 	mu      sync.Mutex
 	agent   *websocket.Conn
 	pending map[string]chan proto.ExecResult
+	led     *ledger
 }
 
 // newHub returns a hub with an empty pending table; the agent slot
@@ -51,6 +53,7 @@ func (h *hub) serve(ctx context.Context) error {
 		return fmt.Errorf("serve needs -token")
 	}
 	h.ctx = ctx
+	h.led = openLedger(h.cfg.ledgerPath)
 
 	_ = os.Remove(h.cfg.socketPath)
 	ln, err := net.Listen("unix", h.cfg.socketPath)
@@ -188,5 +191,6 @@ func (h *hub) serveClient(conn net.Conn) {
 	if err != nil {
 		res = proto.ExecResult{ExitCode: -1, Stderr: "vbt-server: " + err.Error()}
 	}
+	h.led.record(f.ID, *f.Exec, res)
 	json.NewEncoder(conn).Encode(proto.Frame{Kind: proto.ExecOutput, ID: f.ID, Result: &res})
 }

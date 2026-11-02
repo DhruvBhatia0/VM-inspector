@@ -6,14 +6,17 @@
 #   stand-in from the blog: the sandbox has no inbound, so the tunnel is
 #   always VM -> operator).
 #
-# Six checks. ~15s. Real binaries, real VM, no mocks.
+# Seven checks. ~15s. Real binaries, real VM, no mocks. Runs on its own
+# port (8766) so it can coexist with a live production daemon on 8765.
 set -u
 cd "$(dirname "$0")"
 
 TOKEN="vbt-harness-$$"
 SOCK="/tmp/vbt-harness-$$.sock"
+LED="/tmp/vbt-harness-ledger-$$.jsonl"
 VM=jfsbench
-RPORT=18999
+HPORT=8766
+RPORT=18998
 FAILS=0
 SERVER_PID= SSH_PID=
 
@@ -21,7 +24,7 @@ cleanup() {
   [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null
   [ -n "${SSH_PID:-}" ] && kill "$SSH_PID" 2>/dev/null
   limactl shell "$VM" -- pkill vbt-agent 2>/dev/null
-  rm -f "$SOCK" bin/vbt-agent
+  rm -f "$SOCK" "$LED" bin/vbt-agent
   return 0
 }
 trap cleanup EXIT
@@ -41,12 +44,12 @@ say "== deploy agent to VM ($VM)"
 limactl copy bin/vbt-agent "$VM:/tmp/vbt-agent" || exit 1
 
 say "== start daemon, tunnel, agent"
-bin/vbt-server serve -addr 127.0.0.1:8765 -socket "$SOCK" -token "$TOKEN" &
+bin/vbt-server serve -addr 127.0.0.1:${HPORT} -socket "$SOCK" -ledger "$LED" -token "$TOKEN" &
 SERVER_PID=$!
 for _ in $(seq 50); do [ -S "$SOCK" ] && break; sleep 0.1; done
 [ -S "$SOCK" ] || { say "daemon socket never appeared"; exit 1; }
 
-ssh -F ~/.lima/$VM/ssh.config -o ControlMaster=no -o ControlPath=none -N -R ${RPORT}:localhost:8765 lima-$VM &
+ssh -F ~/.lima/$VM/ssh.config -o ControlMaster=no -o ControlPath=none -N -R ${RPORT}:localhost:${HPORT} lima-$VM &
 SSH_PID=$!
 sleep 1
 
@@ -75,6 +78,7 @@ c_exit()    { V sh -c 'exit 42' | jq -e '.exit_code == 42'; }
 c_fail()    { V ls /definitely/not-there | jq -e '.exit_code != 0 and (.stdout | length == 0) and (.stderr | length > 0)'; }
 c_timeout() { bin/vbt-server exec -socket "$SOCK" --json -timeout 1 sleep 60 | jq -e '.timed_out == true'; }
 c_badauth() { ! limactl shell "$VM" -- timeout 8 /tmp/vbt-agent -url ws://localhost:${RPORT}/tunnel -token wrong >/dev/null 2>&1; }
+c_ledger()  { jq -s -e '(.[] | select(.type == "session_start")) and (([.[] | select(.argv)] | length) >= 6) and ([.[] | .timed_out] | any)' "$LED"; }
 
 check "ls: stdout roundtrip"      c_ls
 check "grep: sequencing + cwd"    c_grep
@@ -82,6 +86,7 @@ check "exit code propagation"     c_exit
 check "failure: stderr separation" c_fail
 check "timeout kill"              c_timeout
 check "bad token rejected"        c_badauth
+check "ledger records session"    c_ledger
 
 say ""
 say "agent reports: $(V uname -srm | jq -r .stdout | tr -d '\n')"
