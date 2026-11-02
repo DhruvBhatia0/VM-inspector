@@ -3,21 +3,21 @@
 // The tunnel's transport is an implementation detail (WebSocket today).
 //
 // Scope decision: exec only. There is deliberately no PTY/stream frame;
-// if one is ever added, it gets a new Kind here and nowhere else.
+// if one is ever added, it gets a new PayloadKind here and nowhere else.
 package proto
 
-// Kind identifies a frame on the wire.
-type Kind string
+// PayloadKind identifies what a frame on the wire carries.
+type PayloadKind string
 
 const (
-	KindExec       Kind = "exec"        // client → agent: run one command
-	KindExecResult Kind = "exec_result" // agent → client: its outcome
+	TerminalCommands PayloadKind = "terminalCommands" // client → agent: run commands
+	ExecOutput       PayloadKind = "execOutput"       // agent → client: their outcome
 )
 
 // Frame is the envelope for every message. ID correlates a result with
 // its request.
 type Frame struct {
-	Kind   Kind         `json:"type"`
+	Kind   PayloadKind `json:"type"`
 	ID     string       `json:"id"`
 	Exec   *ExecRequest `json:"exec,omitempty"`
 	Result *ExecResult  `json:"result,omitempty"`
